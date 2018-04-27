@@ -1,3 +1,6 @@
+import matplotlib
+matplotlib.use('agg')
+
 import matplotlib.pyplot as plt
 import seaborn as sns
 
@@ -9,8 +12,8 @@ import pickle
 import numpy as np
 import pandas as pd
 
-from gatspy import periodic
-
+#from gatspy import periodic
+from astropy.stats import LombScargle
 
 def _make_path(datadir, ra_dir, dec_dir, fname):
     f = datadir + "testLCdir/" + ra_dir + "/" + dec_dir + "/" + fname
@@ -110,7 +113,7 @@ def calculate_variability_measures(d):
     return d
 
 
-def plot_single_filter_psd(tai, mag, magerr, periods, scores, best_period, tfit, magfit, filename):
+def plot_single_filter_psd(tai, mag, magerr, periods, scores, best_period, tfit, magfit, fap, sig_level, filename):
  
     """
     Plot the time series, Lomb-Scargle periodogram and folded phase curve at the 
@@ -142,7 +145,13 @@ def plot_single_filter_psd(tai, mag, magerr, periods, scores, best_period, tfit,
 
     magfit : numpy.ndarray
         Values of the best-fit model at the time stamps given in `tfit`
-    
+
+    fap : float [0, 1]
+        The false-alarm probability for the highest power
+
+    sig_level : float
+        The 0.01 significance threshold   
+ 
     filename : str
         Full path plus root string that will be used to store 
         the figure to disk
@@ -167,13 +176,17 @@ def plot_single_filter_psd(tai, mag, magerr, periods, scores, best_period, tfit,
 
     # set labels
     ax2.set(xlabel='period (days)', ylabel='Lomb Scargle Power',
-           xlim=(periods[0], periods[-1]), ylim=(0, np.max(scores)*1.1))
+           xlim=(periods[0], periods[-1]))
 
     # set x-scale to logarithmic because I'm used to looking at periodograms this way
     ax2.set_xscale("log")
 
-    # plot a black line with the best-fit period
-    ax2.vlines(best_period, 0, np.max(scores)*1.1, lw=3, linestyle="dashed", color="black")
+    # plot a black line with the best-fit period and with the significance level
+    ax2.hlines(sig_level, np.min(periods), np.max(periods), lw=3, color="purple", linestyle="dashed")
+    ax2.set_ylim(0, np.max([np.max(scores), sig_level])*1.1)
+
+
+    ax2.vlines(best_period, 0, np.max(scores)*1.1, lw=1, linestyle="dashed", color="black", zorder=10)
     ax2.set_title("P = " + str(best_period))
     
 
@@ -188,6 +201,7 @@ def plot_single_filter_psd(tai, mag, magerr, periods, scores, best_period, tfit,
     ax3.plot(phasefit, magfit, '-', color='gray')
     ax3.set(xlabel='phase', ylabel='r magnitude')
     ax3.invert_yaxis()
+    ax3.set_title("p-value = %.3e"%fap)
 
     fig.tight_layout()
    
@@ -203,7 +217,10 @@ def plot_multi_filter_psd(time, mag, magerr, filts, periods, scores, best_period
     """
     Plot the time series, Lomb-Scargle periodogram and folded phase curve at the 
     best-fit period for a given Lomb-Scargle periodogram.
-    
+   
+    NOTE: NEED TO UPDATE WITH ASTROPY LOMB-SCARGLE
+
+ 
     Parameters
     ----------
     
@@ -301,7 +318,7 @@ def plot_multi_filter_psd(time, mag, magerr, filts, periods, scores, best_period
     return
 
 
-def single_filter_periodogram(d, pmin=1.0, filt="r", datadir="./"):
+def single_filter_periodogram(d, pmin=1.0, oversampling=5, filt="r", datadir="./"):
     """
     Run a lomb-scargle periodogram on a single band.
 
@@ -312,6 +329,11 @@ def single_filter_periodogram(d, pmin=1.0, filt="r", datadir="./"):
 
     p_min : float
        Minimum period for the Lomb-Scargle periodogram.
+
+    oversampling : float
+       The oversampling factor for the periodogram
+       Default: 5
+
 
     filt : str, {"u", "g", "r", "i", "z"}
        The filter to run the periodogram in
@@ -337,48 +359,86 @@ def single_filter_periodogram(d, pmin=1.0, filt="r", datadir="./"):
     # baseline of the time series
     pmax = (np.max(tai)-np.min(tai))
 
+    # determine minimum and maximum frequencies
+    fmax = 1./pmin
+    fmin = 1./pmax
+
+    # determine number of frequencies
+    nfreq =  oversampling * (fmax - fmin)/fmin
+
+    # make an array of frequencies
+    freq = np.linspace(fmin, fmax, nfreq)
+
+    # array of periods
+    periods = 1./freq
+
+    # instantiate LombScargle model:
+    ls = LombScargle(tai, mag, magerr)
+    
+    # compute the power at each frequency
+    power = ls.power(freq)
+
+    # compute the maximum power at its frequency
+    max_idx = np.argmax(power)
+    max_power = power[max_idx]
+    max_freq = freq[max_idx]
+    max_period = 1./max_freq
+
+    # compute the false-alarm probability
+    fap = ls.false_alarm_probability(max_power, minimum_frequency=fmin, maximum_frequency=fmax)
+
+    # compute the 0.01 significance threshold
+    psig = 0.01
+    sig_level = ls.false_alarm_level(psig, minimum_frequency=fmin, maximum_frequency=fmax)
+
     # instantiate the LombScargle periodogram class
-    model = periodic.LombScargle(fit_period=True)
+    #model = periodic.LombScargle(fit_period=True)
     # set the range of periods to search over
 
-    model.optimizer.period_range = (pmin, pmax)
+    #model.optimizer.period_range = (pmin, pmax)
 
     # fit the model to the data
-    model.fit(tai, mag, magerr)
+    #model.fit(tai, mag, magerr)
   
     # what's the best-fit period?
-    period = model.best_period
+    #period = model.best_period
 
     # set up a grid of periods
-    periods = np.linspace(pmin, pmax, 10000)
+    #periods = np.linspace(pmin, pmax, 10000)
    
     # calculate LSP over a grid of periods: 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        scores = model.score(periods)
+    #with warnings.catch_warnings():
+    #    warnings.simplefilter("ignore")
+    #    scores = model.score(periods)
 
 
      # make an array of time stamps within one period
-    tfit = np.linspace(0, period, 1000)
+    tfit = np.linspace(0, max_period, 1000)
 
     # predict the model within that period
-    magfit = model.predict(tfit)
-
+    magfit = ls.model(tfit, max_freq)
+    
     # plot the result
     froot =  d["filename"].split("/")[-1][:-4]
-    froot = "./lombscargle/" + froot
-    plot_single_filter_psd(tai, mag, magerr, periods, scores, model.best_period, tfit, magfit, froot) 
+    froot = datadir + froot
+    plot_single_filter_psd(tai, mag, magerr, periods, power, max_period, tfit, magfit, fap, sig_level, froot) 
 
     # store some output
     with open(froot + "_f=" + filt + "_log.txt", "w") as f:
        f.write("Filter: " + filt + "\n")
-       f.write("best-fit period: " + str(period) + "\n")
+       f.write("best-fit period: " + str(max_period) + "\n")
+       f.write("false alarm probability: " + str(fap))
 
-    np.savetxt(froot + "_f=" + filt + "_lsp.txt", np.array([periods, scores]).T) 
+    np.savetxt(froot + "_f=" + filt + "_lsp.txt", np.array([periods, power]).T) 
     
-    return
+    return max_period, max_power, fap
 
 def multi_filter_periodogram(d, pmin=1.0, datadir="./"):
+    """
+    NOTE: NEED TO UPDATE WITH ASTROPY LOMB-SCARGLE THING!
+
+    """
+
     # get data out of dictionary in a useful format
     utai = d["tai_u"]
     gtai = d["tai_g"]
@@ -469,7 +529,7 @@ def process_lightcurves(datadir):
     # get out the light curves we're interested in 
     lst_new = lst[(lst["ndata"] >= ndata) & (lst["rms_r"] <= lim_rms) & (lst["med_r"] <= max_mag)]
 
-    print("There are %i entries that match the criteria: " + str(len(lst_new)))
+    print("There are %i entries that match the criteria: "%len(lst_new))
    
     data_all = []
     # loop over all light curves:
@@ -496,7 +556,7 @@ def process_lightcurves(datadir):
     
     print("Finished reading all light curves.")
 
-    print("There are %i light curves with at least %i data points and r-band rms < 0.1."%(len(data_all), ndata))
+    print("There are %i light curves with at least %i data points and r-band rms < %.3f"%(len(data_all), ndata, lim_rms))
   
     return data_all
 
@@ -514,11 +574,26 @@ def main():
             data_all = pickle.load(f)
 
 
-    for d in data_all:
+    f = open(datadir+"_lsp_summary.txt", "w")
+
+    f.write("#filename \t  RA Directory \t Dec Directory \t max_period \t max_power \t fap \n")
+    for i,d in enumerate(data_all):
+        print(i)
+        print("Running LSP on file %s"%d["filename"])
         if single:
-            single_filter_periodogram(d, pmin=pmin, filt=filt, datadir=datadir)
+            max_period, max_power, fap = single_filter_periodogram(d, pmin=pmin, filt=filt, datadir=datadir)
+
+            df_split = d["filename"].split("/")
+
+            fname = df_split[-1]
+            dec_folder = df_split[-2]
+            ra_folder = df_split[-3]
+
+            f.write(fname + "\t" + ra_folder + "\t" + dec_folder + "\t" + str(max_period) + "\t" + str(max_power) + "\t" + str(fap) + "\n")
         else:
-            multi_filter_periodogram(d, pmin=pmin,  datadir=datadir)
+            max_period, max_power, fap = multi_filter_periodogram(d, pmin=pmin,  datadir=datadir)
+    f.close()
+
     return
 
 
