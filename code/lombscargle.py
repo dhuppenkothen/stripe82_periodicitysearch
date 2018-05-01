@@ -524,7 +524,7 @@ def process_lightcurves(datadir):
     print("minimum number of data points: " + str(ndata))
     print("maximum RMS amplitude: " + str(lim_rms))
     print("maximum magnitude to consider (faint end): " + str(max_mag))
-
+    print("maximum difference between brightest and faintest r-band magnitude: " + str(maxdiff))
 
     # get out the light curves we're interested in 
     lst_new = lst[(lst["ndata"] >= ndata) & (lst["rms_r"] <= lim_rms) & (lst["med_r"] <= max_mag)]
@@ -552,8 +552,16 @@ def process_lightcurves(datadir):
         # data points, and if it does, include in 
         # data set
         data["filename"] = f
-        data_all.append(data)
-    
+
+        rmag = data["r"]
+        rmax = np.max(rmag)
+        rmin = np.min(rmag)
+        rdiff = rmax - rmin
+        if rdiff < maxdiff:
+            data_all.append(data)
+        else:
+            continue    
+
     print("Finished reading all light curves.")
 
     print("There are %i light curves with at least %i data points and r-band rms < %.3f"%(len(data_all), ndata, lim_rms))
@@ -625,6 +633,9 @@ if __name__ == "__main__":
     parser.add_argument("-p", "--process-data", action="store", dest="procdata", required=False, 
                         default=False, type=bool, help="If True, process the data. If False, read from file.")
 
+    parser.add_argument("--maxdiff", action="store", dest="maxdiff", required=False, default=0.2, type=float, help="The maximum difference between the largest and the smallest r-band magnitude.")
+
+
     # read out command line arguments
     clargs = parser.parse_args()
 
@@ -648,6 +659,10 @@ if __name__ == "__main__":
 
     # upper limit to the rms variability to consider
     lim_rms = clargs.lim_rms
+
+    # largest allowed difference between the largest and smallest r-band magnitude in a light curve
+    # used as a clunky way to remove light curves with "outliers" (e.g. eclipses)
+    maxdiff = clargs.maxdiff
 
     # process the data from scratch or load from file?
     procdata = clargs.procdata
