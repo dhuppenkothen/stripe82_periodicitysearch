@@ -54,7 +54,7 @@ def read_lc(fpath):
     mask_z = (psfmag[:,4] >= 13) & (psfmag[:,4] <= 23)
 
 
-    data_dict = {"ra": ra, "dec":dec,  "tai_u": tai[mask_u,0]+taifrac[mask_u, 0],
+    data_dict = {"filename": fpath, "ra": ra, "dec":dec,  "tai_u": tai[mask_u,0]+taifrac[mask_u, 0],
                  "tai_g": tai[mask_g,0]+taifrac[mask_g, 0],  
                  "tai_r": tai[mask_r,0]+taifrac[mask_r, 0],   
                  "tai_i": tai[mask_i,0]+taifrac[mask_i, 0],   
@@ -355,6 +355,16 @@ def single_filter_periodogram(d, pmin=1.0, oversampling=5, filt="r", datadir="./
     mag = d[filt]
     magerr = d[filt + "_err"]
 
+    med_mag = np.median(mag)
+    std_mag = np.std(mag)
+    mask = (mag > (med_mag - 3.*std_mag)) & (mag <= (med_mag + 3.*std_mag))
+
+    ndel = len(mag) - len(mask)
+
+    tai = tai[mask]
+    mag = mag[mask]
+    magerr = magerr[mask]
+
     # set the maximum time scale to be searched to the 
     # baseline of the time series
     pmax = (np.max(tai)-np.min(tai))
@@ -391,27 +401,6 @@ def single_filter_periodogram(d, pmin=1.0, oversampling=5, filt="r", datadir="./
     psig = 0.01
     sig_level = ls.false_alarm_level(psig, minimum_frequency=fmin, maximum_frequency=fmax)
 
-    # instantiate the LombScargle periodogram class
-    #model = periodic.LombScargle(fit_period=True)
-    # set the range of periods to search over
-
-    #model.optimizer.period_range = (pmin, pmax)
-
-    # fit the model to the data
-    #model.fit(tai, mag, magerr)
-  
-    # what's the best-fit period?
-    #period = model.best_period
-
-    # set up a grid of periods
-    #periods = np.linspace(pmin, pmax, 10000)
-   
-    # calculate LSP over a grid of periods: 
-    #with warnings.catch_warnings():
-    #    warnings.simplefilter("ignore")
-    #    scores = model.score(periods)
-
-
      # make an array of time stamps within one period
     tfit = np.linspace(0, max_period, 1000)
 
@@ -426,12 +415,13 @@ def single_filter_periodogram(d, pmin=1.0, oversampling=5, filt="r", datadir="./
     # store some output
     with open(froot + "_f=" + filt + "_log.txt", "w") as f:
        f.write("Filter: " + filt + "\n")
+       f.write("Removed %i data points before analysis."%ndel)
        f.write("best-fit period: " + str(max_period) + "\n")
        f.write("false alarm probability: " + str(fap))
 
     np.savetxt(froot + "_f=" + filt + "_lsp.txt", np.array([periods, power]).T) 
     
-    return max_period, max_power, fap
+    return max_period, max_power, fap, ndel
 
 def multi_filter_periodogram(d, pmin=1.0, datadir="./"):
     """
@@ -524,7 +514,6 @@ def process_lightcurves(datadir):
     print("minimum number of data points: " + str(ndata))
     print("maximum RMS amplitude: " + str(lim_rms))
     print("maximum magnitude to consider (faint end): " + str(max_mag))
-    print("maximum difference between brightest and faintest r-band magnitude: " + str(maxdiff))
 
     # get out the light curves we're interested in 
     lst_new = lst[(lst["ndata"] >= ndata) & (lst["rms_r"] <= lim_rms) & (lst["med_r"] <= max_mag)]
@@ -551,16 +540,7 @@ def process_lightcurves(datadir):
         # check whether it contains at least 50 
         # data points, and if it does, include in 
         # data set
-        data["filename"] = f
-
-        rmag = data["r"]
-        rmax = np.max(rmag)
-        rmin = np.min(rmag)
-        rdiff = rmax - rmin
-        if rdiff < maxdiff:
-            data_all.append(data)
-        else:
-            continue    
+        data_all.append(data)
 
     print("Finished reading all light curves.")
 
@@ -586,10 +566,9 @@ def main():
 
     f.write("#filename \t  RA Directory \t Dec Directory \t max_period \t max_power \t fap \n")
     for i,d in enumerate(data_all):
-        print(i)
         print("Running LSP on file %s"%d["filename"])
         if single:
-            max_period, max_power, fap = single_filter_periodogram(d, pmin=pmin, filt=filt, datadir=datadir)
+            max_period, max_power, fap, ndel = single_filter_periodogram(d, pmin=pmin, filt=filt, datadir=datadir)
 
             df_split = d["filename"].split("/")
 
@@ -597,7 +576,7 @@ def main():
             dec_folder = df_split[-2]
             ra_folder = df_split[-3]
 
-            f.write(fname + "\t" + ra_folder + "\t" + dec_folder + "\t" + str(max_period) + "\t" + str(max_power) + "\t" + str(fap) + "\n")
+            f.write(fname + "\t" + ra_folder + "\t" + dec_folder + "\t" + str(max_period) + "\t" + str(max_power) + "\t" + str(fap) +  "\t" + str(ndel) + "\n")
         else:
             max_period, max_power, fap = multi_filter_periodogram(d, pmin=pmin,  datadir=datadir)
     f.close()
@@ -633,9 +612,6 @@ if __name__ == "__main__":
     parser.add_argument("-p", "--process-data", action="store", dest="procdata", required=False, 
                         default=False, type=bool, help="If True, process the data. If False, read from file.")
 
-    parser.add_argument("--maxdiff", action="store", dest="maxdiff", required=False, default=0.2, type=float, help="The maximum difference between the largest and the smallest r-band magnitude.")
-
-
     # read out command line arguments
     clargs = parser.parse_args()
 
@@ -659,10 +635,6 @@ if __name__ == "__main__":
 
     # upper limit to the rms variability to consider
     lim_rms = clargs.lim_rms
-
-    # largest allowed difference between the largest and smallest r-band magnitude in a light curve
-    # used as a clunky way to remove light curves with "outliers" (e.g. eclipses)
-    maxdiff = clargs.maxdiff
 
     # process the data from scratch or load from file?
     procdata = clargs.procdata
